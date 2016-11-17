@@ -1,0 +1,226 @@
+#! /bin/bash 
+#
+# Install a new Splunk instance and change hostname to that instance_host
+# Any issues or comments contact drg@himynamesdave.com
+#
+
+clear	#clear terminal window
+
+#User Variables
+TARDIR="/Users/dgreenwood/splunks/images" 
+TARNAME="splunk-6.5.0-59c8927def0f-darwin-64.tgz"
+INSTDIR="/Users/dgreenwood/splunks/environments"
+NEWPORTFILE="/Users/dgreenwood/splunks"
+BROWSER="chrome"
+
+#Script Variables
+ARG=$1
+INSTNAME=$2
+
+#Script Functions
+#
+
+GET_ITEM() {
+  REGEX="$1"
+  RESULT=$(grep "$REGEX" $INSTDIR/$INSTNAME/etc/system/local/web.conf 2>/dev/null)
+
+  if [[ -z $RESULT ]]; then
+    RESULT=$(grep "$REGEX" $INSTDIR/$INSTNAME/etc/system/default/web.conf 2>/dev/null)
+  fi
+  echo $RESULT
+}
+
+GET_WEB_PORT() {
+  GET_ITEM "^httpport *=" $1 | awk '{print $3}'
+}
+
+GET_MGMT_PORT() {
+  GET_ITEM "^mgmtHostPort *=" $1 | awk -F: '{print $2}'
+}
+
+GET_NEWPORT() {
+  REGEX="$1"
+  RESULT=$(grep "$REGEX" $NEWPORTFILE 2>/dev/null)
+
+  if [[ -z $RESULT ]]; then
+    RESULT=$(grep "$REGEX" $NEWPORTFILE 2>/dev/null)
+  fi
+  echo $RESULT
+}
+
+
+NEWWEB() {
+  GET_NEWPORT "^newwebport *=" $1 | awk '{print $3}'
+}
+
+NEWMGMT() {
+  GET_NEWPORT "^newmgmtport *=" $1 | awk '{print $3}'
+}
+
+#Create Instance
+function CREATE {
+	echo "Creating Instance"
+	echo
+	if [ -z $INSTNAME ]; then
+		echo "ERROR: Instance name missing"
+		echo
+		usage
+		exit
+	elif [ ! -e $INSTDIR/$INSTNAME ]; then
+		tar -xf "$TARDIR/$TARNAME" -C $INSTDIR
+		mv "$INSTDIR/splunk" "$INSTDIR/$INSTNAME"
+		echo "$INSTNAME_host" > "$INSTDIR/$INSTNAME/etc/system/local/server.conf"
+		echo "$INSTNAME created"
+
+		NEWWEBPORT=$(NEWWEB)
+		NEWMGMTPORT=$(NEWMGMT)
+		
+		$INSTDIR/$INSTNAME/bin/splunk --accept-license set web-port $NEWWEBPORT
+		$INSTDIR/$INSTNAME/bin/splunk set splunkd-port $NEWMGMTPORT
+
+	        INEWWEBPORT=$((NEWWEBPORT+1))
+                INEWMGMTPORT=$((NEWMGMTPORT+1))
+
+		echo "newmgmtport = $INEWMGMTPORT" > $NEWPORTFILE
+		echo "newwebport = $INEWWEBPORT" >> $NEWPORTFILE
+		echo $NEWWEBPORT $NEWMGMTPORT 
+		echo "$INSTNAME ports changed"
+		exit
+	fi
+}
+
+
+#List Instance
+function LIST {
+	echo "List and Status of Instances"
+	echo
+	echo "Instance  Webport  Mgmtport  Status"
+	echo "======================================"
+	echo
+
+	ls $INSTDIR | while read path; do
+		if [ -e $INSTDIR/$path/bin/splunk ]; then
+			INSTNAME=$path
+			WEBPORT=$(GET_WEB_PORT)
+			MGMTPORT=$(GET_MGMT_PORT)
+			SPLUNKPS=$(pgrep -fl "splunkd -p $MGMTPORT" | head -1 | awk '{print $1}')
+			if [ -z "$SPLUNKPS" ]; then
+				echo "$INSTNAME     $WEBPORT      $MGMTPORT  Not Running"
+			else
+				echo "$INSTNAME     $WEBPORT      $MGMTPORT  Running"
+			fi
+		fi
+	done
+}
+
+#Remove Instance
+function REMOVE {
+	echo "Are you sure you want to delete this instance?"
+	read removeinst
+	if [[ $removeinst == "Y" || $removeinst == "y" ]]; then
+		echo "Stopping $INSTNAME"
+		STOP > /dev/null
+        	rm -rf $INSTDIR/$INSTNAME
+		echo "Instance $INSTNAME has been deleted"
+        	exit
+	else
+		echo "$INSTNAME has not been touched"
+		exit
+	fi
+
+}
+
+#Start Instance
+function START {
+	echo "Starting $INSTNAME"
+	echo
+	$INSTDIR/$INSTNAME/bin/splunk start
+	exit
+}
+
+#Restart Instance
+function RESTART {
+	echo "Restart Instance"
+	echo
+        $INSTDIR/$INSTNAME/bin/splunk restart
+}
+
+#Stop Instance
+function STOP {
+	echo "Stop Instance"
+	echo
+        $INSTDIR/$INSTNAME/bin/splunk stop
+}
+
+#Stop all Instances
+function STOPALL {
+	ls $INSTDIR | while read path; do
+		if [ -e $INSTDIR/$path/bin/splunk ]; then
+			INSTNAME=$path
+			STOP > /dev/null
+			echo $path stopped
+		fi
+	done
+	exit
+}
+
+# Open Instance
+function OPEN {
+	echo "Opening $INSTNAME"
+	echo
+
+	INSTSTAT=$($INSTDIR/$INSTNAME/bin/splunk status | grep splunkd | grep PID | awk '{print $1}')
+	if [ ! -e $INSTSTAT ]; then
+		WEBPORT=$(GET_WEB_PORT)
+		LOCALHOST=$(hostname)
+		open -a "$BROWSER" http://$LOCALHOST:$WEBPORT
+               	exit
+	else
+		echo "ERROR: $INSTNAME is not running"
+		exit
+	fi
+}
+
+# Usage
+function USAGE {
+	echo "Usage: svm command instancename"
+	echo
+	echo "       create or install: Create instancename"
+	echo "       list or status: List instances"
+	echo "       remove or delete: Delete instancename"
+	echo "       start: Start instancename"
+	echo "       stop: Stop instancename"
+	echo "       stopall: Stop all instances"
+	echo "       restart: Restart Instance" 
+	echo "       open: Open instancename"
+	echo "       clean: pkill the python and splunkd's running"
+}
+
+# Clean
+function CLEAN {
+	ps -ef | grep "splunkd" | awk '{print $2}' | xargs kill
+	ps -ef | grep "python" | awk '{print $2}' | xargs kill
+}
+
+#Script Options
+if [[ "$ARG" = "create" || "$ARG" = "install" ]]; then
+	CREATE
+elif [[ "$ARG" = "list" || "$ARG" = "status" ]]; then
+	LIST
+elif [[ "$ARG" = "remove" || "$ARG" = "delete" ]]; then
+	REMOVE
+elif [ "$ARG" = "start" ]; then
+	START
+elif [ "$ARG" = "restart" ]; then
+	RESTART
+elif [ "$ARG" = "stop" ]; then
+	STOP
+elif [ "$ARG" = "stopall" ]; then
+	STOPALL
+elif [ "$ARG" = "open" ]; then
+	OPEN
+elif [ "$ARG" = "clean" ]; then
+	CLEAN
+else
+	USAGE
+fi
